@@ -1,0 +1,353 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>MASLD Risk Calculator (Logistic Regression)</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 1100px; margin: 28px auto; }
+    h2 { margin: 0 0 6px 0; }
+    .sub { color:#555; margin: 0 0 14px 0; }
+    .layout { display: grid; grid-template-columns: 420px 1fr; gap: 18px; align-items: start; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 14px; }
+    .grid { display:grid; grid-template-columns: 220px 1fr; gap: 10px 12px; }
+    label { align-self:center; }
+    input { padding: 8px; width: 100%; box-sizing: border-box; }
+    .row { display:flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+    button { padding: 10px 14px; cursor:pointer; border-radius: 10px; border: 1px solid #ccc; background: #fafafa; }
+    button:hover { background:#f2f2f2; }
+    .banner {
+      border-radius: 14px;
+      padding: 18px 16px;
+      margin-bottom: 12px;
+      text-align: center;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      font-size: 44px;
+      line-height: 1.0;
+      border: 2px solid #eee;
+    }
+    .banner small {
+      display:block;
+      margin-top: 6px;
+      font-weight: 600;
+      font-size: 16px;
+      color: #444;
+      letter-spacing: 0;
+    }
+    .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+    .metric { border: 1px solid #eee; border-radius: 12px; padding: 10px; }
+    .metric .k { color:#666; font-size: 12px; }
+    .metric .v { font-weight: 800; font-size: 22px; margin-top: 4px; }
+    .small { font-size: 12px; color:#666; }
+    .controls { display:flex; gap: 10px; align-items:center; flex-wrap: wrap; margin-top: 8px; }
+    .controls input[type="checkbox"] { width: auto; }
+
+    /* Contribution chart */
+    .chartWrap { margin-top: 10px; }
+    .axis { position: relative; height: 14px; }
+    .axis:before {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: #bbb;
+    }
+    .barRow {
+      display:grid;
+      grid-template-columns: 220px 1fr 90px;
+      gap: 10px;
+      align-items:center;
+      margin: 8px 0;
+    }
+    .fname { font-size: 13px; color:#222; }
+    .barArea {
+      position: relative;
+      height: 18px;
+      background: #f6f6f6;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid #eee;
+    }
+    .zeroLine {
+      position:absolute;
+      left:50%;
+      top:0;
+      bottom:0;
+      width:2px;
+      background:#bbb;
+      opacity:0.9;
+    }
+    .bar {
+      position:absolute;
+      top:2px;
+      bottom:2px;
+      border-radius: 8px;
+    }
+    .val { font-variant-numeric: tabular-nums; text-align:right; font-size: 12px; color:#333; }
+    .legend { display:flex; justify-content: space-between; color:#777; font-size:12px; margin: 6px 0 2px 0; }
+    .foot { margin-top: 10px; }
+    code { background:#f7f7f7; padding:2px 6px; border-radius:6px; }
+  </style>
+</head>
+<body>
+  <h2>MASLD Risk Calculator (Logistic Regression)</h2>
+  
+  <div class="layout">
+    <!-- LEFT: inputs -->
+    <div class="card">
+      <h3 style="margin:0 0 10px 0;">Inputs</h3>
+      <div class="grid" id="form"></div>
+
+      <div class="row">
+        <button onclick="predict()">PREDICT</button>
+        <button onclick="resetAll()">RESET</button>
+      </div>
+
+      <div class="foot small">
+        <div><b>Model:</b> <code>LogisticRegression (closed-form)</code></div>
+        <div style="margin-top:4px;">
+          <b>Note:</b> Empty fields are filled with training medians (only if left blank).
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: outputs -->
+    <div class="card">
+      <div id="banner" class="banner" style="display:none;"></div>
+
+      <div class="metrics" id="metrics" style="display:none;">
+        <div class="metric">
+          <div class="k">Linear predictor (η)</div>
+          <div class="v" id="etaVal">-</div>
+        </div>
+        <div class="metric">
+          <div class="k">Predicted probability</div>
+          <div class="v" id="probVal">-</div>
+        </div>
+      </div>
+
+      <div class="controls" id="controls" style="display:none;">
+        <label><input type="checkbox" id="useBaseline" checked /> Show contributions vs baseline (x - median)</label>
+        <label class="small">Risk threshold for banner:
+          <input type="number" id="riskThr" step="any" style="width:90px;" />
+        </label>
+      </div>
+
+      <div class="chartWrap" id="chartWrap" style="display:none;">
+        <h3 style="margin:10px 0 6px 0;">Feature contribution to η</h3>
+        <div class="legend">
+          <span>Protective (η ↓)</span>
+          <span>Risk-increasing (η ↑)</span>
+        </div>
+        <div class="axis"></div>
+        <div id="bars"></div>
+        <div class="small" style="margin-top:6px;">
+          Bars represent each feature's additive contribution to η. Center line = 0 contribution.
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+const ART = {"model": "LogisticRegression", "intercept_b_star": -10.708763518435784, "features": ["Sex", "Age", "Household income", "BMI SDS", "WC SDS", "Systolic BP", "Regular physical activity", "Frequency of home-prepared meals"], "coef_for_raw_x": {"Sex": -1.2384714986592376, "Age": 0.3618099071236504, "Household income": 0.16047484391445516, "BMI SDS": 2.381542071462634, "WC SDS": 1.3967581554738682, "Systolic BP": 0.0009145682148983438, "Regular physical activity": -0.07337159696473708, "Frequency of home-prepared meals": 0.020917591746708198}, "median_for_missing": {"Sex": 1.0, "Age": 15.0, "Household income": 3.0, "BMI SDS": 0.017274543143644648, "WC SDS": 0.2297735480591252, "Systolic BP": 108.39049999999999, "Regular physical activity": 0.0, "Frequency of home-prepared meals": 3.0}, "risk_threshold": 0.5, "feature_units": {"Sex": "", "Age": "", "Household income": "", "BMI SDS": "", "WC SDS": "", "Systolic BP": "", "Regular physical activity": "", "Frequency of home-prepared meals": ""}};
+
+function sigmoid(x) {
+  return 1 / (1 + Math.exp(-x));
+}
+
+function fmt(x, d=6) {
+  if (!isFinite(x)) return "NA";
+  return x.toFixed(d);
+}
+
+function buildForm() {
+  const form = document.getElementById("form");
+  form.innerHTML = "";
+  ART.features.forEach(fn => {
+    const lab = document.createElement("label");
+    const unit = (ART.feature_units && ART.feature_units[fn]) ? " (" + ART.feature_units[fn] + ")" : "";
+    lab.textContent = fn + unit;
+
+    const inp = document.createElement("input");
+    inp.type = "number";
+    inp.step = "any";
+    inp.id = "f__" + fn;
+    inp.placeholder = "Enter value";
+
+    form.appendChild(lab);
+    form.appendChild(inp);
+  });
+
+  // initialize risk threshold input
+  const thrEl = document.getElementById("riskThr");
+  thrEl.value = (ART.risk_threshold !== undefined) ? ART.risk_threshold : 0.5;
+}
+
+function resetAll() {
+  ART.features.forEach(fn => {
+    const el = document.getElementById("f__" + fn);
+    if (el) el.value = "";
+  });
+  document.getElementById("banner").style.display = "none";
+  document.getElementById("metrics").style.display = "none";
+  document.getElementById("controls").style.display = "none";
+  document.getElementById("chartWrap").style.display = "none";
+  document.getElementById("bars").innerHTML = "";
+}
+
+function getInputs() {
+  const x = {};
+  ART.features.forEach(fn => {
+    const el = document.getElementById("f__" + fn);
+    let v = el.value;
+    if (v === "" || v === null || v === undefined) {
+      // if left blank, fill with median (matches pipeline behavior if missing ever appears)
+      v = ART.median_for_missing[fn];
+    } else {
+      v = parseFloat(v);
+      if (Number.isNaN(v)) v = ART.median_for_missing[fn];
+    }
+    x[fn] = v;
+  });
+  return x;
+}
+
+function computeEtaProb(x) {
+  let eta = ART.intercept_b_star;
+  ART.features.forEach(fn => {
+    eta += ART.coef_for_raw_x[fn] * x[fn];
+  });
+  const p = sigmoid(eta);
+  return {eta, p};
+}
+
+function computeContribs(x, useBaseline=true) {
+  // contribution to eta:
+  //   if useBaseline: w*(x - median)
+  //   else:           w*x
+  const rows = [];
+  ART.features.forEach(fn => {
+    const w = ART.coef_for_raw_x[fn];
+    const base = ART.median_for_missing[fn];
+    const v = x[fn];
+    const c = useBaseline ? (w * (v - base)) : (w * v);
+    rows.push({feature: fn, w: w, x: v, base: base, contrib: c});
+  });
+  // sort by absolute contribution
+  rows.sort((a,b) => Math.abs(b.contrib) - Math.abs(a.contrib));
+  return rows;
+}
+
+function renderBanner(p) {
+  const thr = parseFloat(document.getElementById("riskThr").value || "0.5");
+  const banner = document.getElementById("banner");
+  banner.style.display = "block";
+
+  const isHigh = p >= thr;
+
+  // Simple color logic without external libs
+  // High risk -> red-ish, Low risk -> green-ish
+  banner.style.background = isHigh ? "#ffe8e8" : "#eaffea";
+  banner.style.borderColor = isHigh ? "#ffd0d0" : "#c9f3c9";
+  banner.style.color = isHigh ? "#d10000" : "#0a8a0a";
+
+  banner.innerHTML = (isHigh ? "HIGH RISK" : "LOW RISK") +
+    `<small>Predicted MASLD probability: ${(p*100).toFixed(2)}%</small>`;
+}
+
+function renderMetrics(eta, p) {
+  document.getElementById("metrics").style.display = "grid";
+  document.getElementById("etaVal").textContent = fmt(eta, 6);
+  document.getElementById("probVal").textContent = (p*100).toFixed(2) + "%";
+}
+
+function renderBars(contribRows) {
+  document.getElementById("chartWrap").style.display = "block";
+  const bars = document.getElementById("bars");
+  bars.innerHTML = "";
+
+  // scale: map max abs contrib to half-width (50% of barArea)
+  const maxAbs = Math.max(...contribRows.map(r => Math.abs(r.contrib)), 1e-12);
+
+  contribRows.forEach(r => {
+    const row = document.createElement("div");
+    row.className = "barRow";
+
+    const name = document.createElement("div");
+    name.className = "fname";
+    name.textContent = r.feature;
+
+    const area = document.createElement("div");
+    area.className = "barArea";
+    const zero = document.createElement("div");
+    zero.className = "zeroLine";
+    area.appendChild(zero);
+
+    const bar = document.createElement("div");
+    bar.className = "bar";
+
+    // normalized half-width in percent (0..50)
+    const half = 50 * (Math.abs(r.contrib) / maxAbs);
+
+    if (r.contrib >= 0) {
+      // right side (risk increasing)
+      bar.style.left = "50%";
+      bar.style.width = half + "%";
+      bar.style.background = "#19b561";
+    } else {
+      // left side (protective)
+      bar.style.left = (50 - half) + "%";
+      bar.style.width = half + "%";
+      bar.style.background = "#e74c3c";
+    }
+
+    area.appendChild(bar);
+
+    const val = document.createElement("div");
+    val.className = "val";
+    val.textContent = fmt(r.contrib, 6);
+
+    row.appendChild(name);
+    row.appendChild(area);
+    row.appendChild(val);
+    bars.appendChild(row);
+  });
+}
+
+function predict() {
+  const x = getInputs();
+  const {eta, p} = computeEtaProb(x);
+
+  // show panels
+  document.getElementById("controls").style.display = "flex";
+
+  renderBanner(p);
+  renderMetrics(eta, p);
+
+  const useBaseline = document.getElementById("useBaseline").checked;
+  const contribs = computeContribs(x, useBaseline);
+  renderBars(contribs);
+}
+
+document.getElementById("useBaseline").addEventListener("change", () => {
+  // re-render bars only if already predicted
+  if (document.getElementById("chartWrap").style.display === "none") return;
+  const x = getInputs();
+  const useBaseline = document.getElementById("useBaseline").checked;
+  const contribs = computeContribs(x, useBaseline);
+  renderBars(contribs);
+});
+
+document.getElementById("riskThr").addEventListener("change", () => {
+  if (document.getElementById("banner").style.display === "none") return;
+  const x = getInputs();
+  const {eta, p} = computeEtaProb(x);
+  renderBanner(p);
+});
+
+buildForm();
+</script>
+</body>
+</html>
